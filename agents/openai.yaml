@@ -1,0 +1,4 @@
+interface:
+  display_name: "Mac Student Planner"
+  short_description: "Plan days and weeks with Reminders sync"
+  default_prompt: "Use $mac-student-planner to build my weekly plan and sync today’s tasks to Apple Reminders."

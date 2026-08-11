@@ -1,0 +1,24 @@
+{
+  "timezone": "Asia/Singapore",
+  "reminders_list": "Student Plan",
+  "evening_rollover": {
+    "hour": 21,
+    "minute": 30,
+    "preserve_time_of_day": true
+  },
+  "planning": {
+    "max_daily_outcomes": 3,
+    "buffer_ratio": 0.2
+  },
+  "providers": {
+    "ntulearn": {
+      "mode": "ics_or_authenticated_browser"
+    },
+    "outlook": {
+      "mode": "connector_or_ics"
+    },
+    "telegram": {
+      "mode": "provided_export_or_authenticated_browser"
+    }
+  }
+}

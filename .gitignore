@@ -1,0 +1,12 @@
+.DS_Store
+__pycache__/
+*.pyc
+.planner/
+plans/
+exports/
+logs/
+config.json
+*.ics
+result.json
+*.token
+*.secret
