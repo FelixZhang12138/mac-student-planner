@@ -14,6 +14,7 @@
       "due_at": "2026-08-12T09:00:00+08:00",
       "notes": "Example item; replace before syncing.",
       "priority": 5,
+      "rollover": true,
       "source": {
         "provider": "manual",
         "label": "Example"
