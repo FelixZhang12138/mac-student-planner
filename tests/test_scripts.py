@@ -5,7 +5,7 @@ import json
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -103,6 +103,64 @@ class ReminderTests(unittest.TestCase):
         run.assert_not_called()
         self.assertEqual(json.loads(output.getvalue())["task_count"], 1)
 
+    def test_sync_command_routes_normalized_task_and_dry_run(self):
+        plan = {
+            "schema_version": 1,
+            "tasks": [
+                {
+                    "id": "ntulearn-hard-deadline",
+                    "title": "Submit report",
+                    "due_at": "2026-08-12T23:59:00+08:00",
+                    "rollover": False,
+                    "source": {
+                        "provider": "ntulearn",
+                        "path": "/private/course/report.md",
+                    },
+                }
+            ],
+        }
+        result = {
+            "list": "Study",
+            "created": 1,
+            "updated": 0,
+            "skipped": 0,
+            "dry_run": True,
+            "list_would_be_created": False,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "plan.json"
+            path.write_text(json.dumps(plan), encoding="utf-8")
+            output = StringIO()
+            with patch.object(reminders, "run_jxa", return_value=result) as run, redirect_stdout(output):
+                code = reminders.main(
+                    ["sync", "--plan", str(path), "--list", "Study", "--dry-run"]
+                )
+        self.assertEqual(code, 0)
+        payload = run.call_args.args[0]
+        self.assertEqual(payload["mode"], "sync")
+        self.assertEqual(payload["list"], "Study")
+        self.assertTrue(payload["dry_run"])
+        self.assertFalse(payload["tasks"][0]["rollover"])
+        self.assertEqual(payload["tasks"][0]["source"]["path"], "/private/course/report.md")
+        self.assertEqual(json.loads(output.getvalue())["created"], 1)
+
+    def test_rollover_command_rejects_non_forward_target_date(self):
+        error = StringIO()
+        with patch.object(reminders, "run_jxa") as run, redirect_stderr(error):
+            code = reminders.main(
+                [
+                    "rollover",
+                    "--from-date",
+                    "2026-08-12",
+                    "--to-date",
+                    "2026-08-12",
+                    "--dry-run",
+                ]
+            )
+        self.assertEqual(code, 1)
+        run.assert_not_called()
+        self.assertIn("--to-date must be later than --from-date", json.loads(error.getvalue())["error"])
+
 
 class IcsTests(unittest.TestCase):
     def test_parses_event_and_todo_with_provenance(self):
@@ -130,6 +188,25 @@ END:VCALENDAR
         self.assertTrue(records[1]["all_day"])
         self.assertIn("+08:00", records[1]["due_at"])
 
+    def test_unfolds_escaped_text_and_parses_utc_datetime(self):
+        data = """BEGIN:VCALENDAR\r
+BEGIN:VEVENT\r
+UID:lecture-utc\r
+SUMMARY:Long course\r
+ title\r
+DESCRIPTION:Line 1\\nLine 2\r
+DTSTART:20260812T010203Z\r
+URL:https://example.invalid/event/lecture-utc\r
+END:VEVENT\r
+END:VCALENDAR\r
+"""
+        records = import_ics.parse_ics(data, "outlook", "Calendar", "Asia/Singapore")
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["title"], "Long coursetitle")
+        self.assertEqual(records[0]["description"], "Line 1\nLine 2")
+        self.assertEqual(records[0]["start_at"], "2026-08-12T01:02:03+00:00")
+        self.assertEqual(records[0]["source"]["url"], "https://example.invalid/event/lecture-utc")
+
 
 class TelegramTests(unittest.TestCase):
     def test_flattens_export_and_filters_date(self):
@@ -155,6 +232,48 @@ class TelegramTests(unittest.TestCase):
         records = import_telegram.normalize(raw, import_telegram.date(2026, 8, 1), None, "CZ1001")
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["text"], "Quiz due Friday")
+        self.assertEqual(records[0]["source"]["external_id"], "42:7")
+
+    def test_reads_nested_export_and_skips_invalid_message_dates(self):
+        raw = {
+            "chats": {
+                "list": [
+                    {
+                        "name": "Course Group",
+                        "id": 42,
+                        "messages": [
+                            {
+                                "id": 7,
+                                "type": "message",
+                                "date": "2026-08-10T09:00:00",
+                                "text": "Bring the lab kit",
+                            },
+                            {
+                                "id": 8,
+                                "type": "message",
+                                "date": "not-a-date",
+                                "text": "Unusable timestamp",
+                            },
+                        ],
+                    },
+                    {
+                        "name": "Unrelated Chat",
+                        "id": 99,
+                        "messages": [
+                            {
+                                "id": 1,
+                                "type": "message",
+                                "date": "2026-08-10T10:00:00",
+                                "text": "Ignore me",
+                            }
+                        ],
+                    },
+                ]
+            }
+        }
+        records = import_telegram.normalize(raw, None, None, "course")
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["text"], "Bring the lab kit")
         self.assertEqual(records[0]["source"]["external_id"], "42:7")
 
 
@@ -205,6 +324,43 @@ class LocalSourceTests(unittest.TestCase):
         second_ids = {record["data"]["id"]: record["source"]["external_id"] for record in second}
         self.assertEqual(first_ids, second_ids)
 
+    def test_scan_skips_symbolic_links(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "week.md"
+            target.write_text("# Week", encoding="utf-8")
+            (root / "alias.md").symlink_to(target)
+            records, skipped = import_local.scan(root, recursive=True, max_bytes=100_000)
+        self.assertEqual(skipped, [])
+        self.assertEqual([record["source"]["label"] for record in records], ["week.md"])
+
+    def test_scan_records_oversized_and_malformed_files_as_skipped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "large.txt").write_text("x" * 200, encoding="utf-8")
+            (root / "broken.json").write_text("{invalid", encoding="utf-8")
+            records, skipped = import_local.scan(root, recursive=True, max_bytes=100)
+        self.assertEqual(records, [])
+        reasons = {Path(item["path"]).name: item["reason"] for item in skipped}
+        self.assertIn("file exceeds 100 bytes", reasons["large.txt"])
+        self.assertIn("Expecting property name", reasons["broken.json"])
+
+    def test_json_explicit_id_survives_task_reordering(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "tasks.json"
+            first_tasks = [
+                {"id": "read", "title": "Read"},
+                {"id": "write", "title": "Write"},
+            ]
+            path.write_text(json.dumps({"tasks": first_tasks}), encoding="utf-8")
+            first = import_local.normalize_file(path, root, 100_000)
+            path.write_text(json.dumps({"tasks": list(reversed(first_tasks))}), encoding="utf-8")
+            second = import_local.normalize_file(path, root, 100_000)
+        first_ids = {record["data"]["id"]: record["source"]["external_id"] for record in first}
+        second_ids = {record["data"]["id"]: record["source"]["external_id"] for record in second}
+        self.assertEqual(first_ids, second_ids)
+
 
 class LaunchdTests(unittest.TestCase):
     def test_preview_plist_uses_rollover(self):
@@ -219,6 +375,57 @@ class LaunchdTests(unittest.TestCase):
         args = launchd.build_parser().parse_args(["print"])
         plist = launchd.build_plist(args)
         self.assertEqual(plist["StartCalendarInterval"], {"Hour": 21, "Minute": 0})
+
+    def test_install_writes_plist_and_bootstraps_launch_agent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plist_path = root / "LaunchAgents" / "com.example.plist"
+            log_dir = root / "logs"
+            reminders_script = root / "reminders.py"
+            python_path = root / "python3"
+            reminders_script.write_text("# test", encoding="utf-8")
+            python_path.write_text("# test", encoding="utf-8")
+            args = launchd.build_parser().parse_args(
+                ["install", "--python", str(python_path), "--list", "Study"]
+            )
+            with patch.object(
+                launchd, "paths", return_value=(plist_path, log_dir, reminders_script)
+            ), patch.object(launchd.sys, "platform", "darwin"), patch.object(
+                launchd.shutil, "which", return_value="/bin/launchctl"
+            ), patch.object(launchd.os, "getuid", return_value=501), patch.object(
+                launchd, "run_launchctl"
+            ) as run:
+                result = launchd.install(args)
+            plist = launchd.plistlib.loads(plist_path.read_bytes())
+        self.assertEqual(result["action"], "installed")
+        self.assertEqual(plist["StartCalendarInterval"], {"Hour": 21, "Minute": 0})
+        self.assertIn("Study", plist["ProgramArguments"])
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args_list[0].args, ("bootout", "gui/501", str(plist_path)))
+        self.assertTrue(run.call_args_list[0].kwargs["allow_failure"])
+        self.assertEqual(run.call_args_list[1].args, ("bootstrap", "gui/501", str(plist_path)))
+
+    def test_status_reports_installed_and_loaded_agent(self):
+        completed = type(
+            "Result",
+            (),
+            {"returncode": 0, "stdout": "service is loaded", "stderr": ""},
+        )()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plist_path = root / "com.example.plist"
+            plist_path.write_text("test", encoding="utf-8")
+            with patch.object(
+                launchd, "paths", return_value=(plist_path, root / "logs", root / "reminders.py")
+            ), patch.object(launchd.sys, "platform", "darwin"), patch.object(
+                launchd.shutil, "which", return_value="/bin/launchctl"
+            ), patch.object(launchd.os, "getuid", return_value=501), patch.object(
+                launchd, "run_launchctl", return_value=completed
+            ):
+                result = launchd.status()
+        self.assertTrue(result["installed"])
+        self.assertTrue(result["loaded"])
+        self.assertEqual(result["detail"], "service is loaded")
 
 
 if __name__ == "__main__":

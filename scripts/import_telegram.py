@@ -55,9 +55,11 @@ def normalize(raw: Any, since: date | None, until: date | None, chat_filter: str
             if not isinstance(message, dict) or message.get("type") not in (None, "message"):
                 continue
             observed_date = message_date(message)
-            if since and (not observed_date or observed_date < since):
+            if not observed_date:
                 continue
-            if until and (not observed_date or observed_date > until):
+            if since and observed_date < since:
+                continue
+            if until and observed_date > until:
                 continue
             text = flatten_text(message.get("text", "")).strip()
             if not text:
