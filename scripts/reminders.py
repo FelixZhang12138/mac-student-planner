@@ -54,11 +54,14 @@ function sourceLine(task) {
   if (source.label) parts.push(source.label);
   if (source.external_id) parts.push(source.external_id);
   if (source.url) parts.push(source.url);
+  if (source.path) parts.push(source.path);
+  if (source.modified_at) parts.push("modified " + source.modified_at);
   return "Source: " + parts.join(" | ");
 }
 
 function taskBody(task) {
   const lines = [marker(task.id), sourceLine(task)];
+  if (task.rollover === false) lines.push("[mac-student-planner:rollover=false]");
   if (task.notes) lines.push(String(task.notes));
   return lines.join("\n");
 }
@@ -149,7 +152,7 @@ function syncMode() {
 
 function rolloverMode() {
   const list = findList(input.list);
-  const result = {list: input.list, moved: 0, skipped_unmanaged: 0, dry_run: input.dry_run, missing_list: !list, items: []};
+  const result = {list: input.list, moved: 0, skipped_unmanaged: 0, skipped_protected: 0, dry_run: input.dry_run, missing_list: !list, items: []};
   if (!list) return result;
 
   const cutoff = new Date(input.cutoff);
@@ -167,6 +170,10 @@ function rolloverMode() {
     const id = managedId(body);
     if (!id && !input.include_unmanaged) {
       result.skipped_unmanaged += 1;
+      continue;
+    }
+    if (body.indexOf("[mac-student-planner:rollover=false]") !== -1) {
+      result.skipped_protected += 1;
       continue;
     }
 
@@ -233,6 +240,9 @@ def validate_plan(raw: Any) -> list[dict[str, Any]]:
         source = task.get("source") or {"provider": "manual"}
         if not isinstance(source, dict) or not str(source.get("provider", "")).strip():
             raise ValueError(f"tasks[{index}].source.provider is required")
+        rollover = task.get("rollover", True)
+        if not isinstance(rollover, bool):
+            raise ValueError(f"tasks[{index}].rollover must be a boolean")
         normalized.append(
             {
                 "id": task_id,
@@ -240,9 +250,10 @@ def validate_plan(raw: Any) -> list[dict[str, Any]]:
                 "due_at": due_at,
                 "notes": str(task.get("notes", "")).strip(),
                 "priority": priority,
+                "rollover": rollover,
                 "source": {
                     key: str(source[key]).strip()
-                    for key in ("provider", "label", "external_id", "url")
+                    for key in ("provider", "label", "external_id", "url", "path", "modified_at")
                     if source.get(key) is not None and str(source[key]).strip()
                 },
             }

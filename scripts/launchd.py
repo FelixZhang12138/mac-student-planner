@@ -132,7 +132,7 @@ def build_parser() -> argparse.ArgumentParser:
     for command in ("print", "install"):
         child = subparsers.add_parser(command)
         child.add_argument("--hour", type=int, default=21, choices=range(0, 24), metavar="0-23")
-        child.add_argument("--minute", type=int, default=30, choices=range(0, 60), metavar="0-59")
+        child.add_argument("--minute", type=int, default=0, choices=range(0, 60), metavar="0-59")
         child.add_argument("--list", default="Student Plan", dest="list_name")
         child.add_argument("--python", default=sys.executable)
         child.add_argument("--include-unmanaged", action="store_true")

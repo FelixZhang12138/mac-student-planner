@@ -4,6 +4,8 @@ __pycache__/
 .planner/
 plans/
 exports/
+local-sources/
+normalized-sources/
 logs/
 config.json
 *.ics

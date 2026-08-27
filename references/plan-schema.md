@@ -19,6 +19,7 @@ Use UTF-8 JSON. The root object must contain `schema_version`, `timezone`, `peri
       "due_at": "2026-08-12T18:00:00+08:00",
       "notes": "Final PDF upload",
       "priority": 1,
+      "rollover": false,
       "source": {
         "provider": "ntulearn",
         "label": "CZ3005",
@@ -37,12 +38,16 @@ Use UTF-8 JSON. The root object must contain `schema_version`, `timezone`, `peri
 - `due_at`: Required ISO 8601 timestamp. Include an offset when known.
 - `notes`: Optional plain text.
 - `priority`: Optional Apple Reminders priority: `0` none, `1` high, `5` medium, `9` low.
+- `rollover`: Optional boolean, default `true`. Set `false` for submissions, exams, and hard deadlines so the 21:00 job preserves the original due time and overdue state.
 - `source.provider`: Required short name such as `reminders`, `ntulearn`, `outlook`, `telegram`, or `manual`.
 - `source.label`: Optional human-readable course, calendar, chat, or list name.
 - `source.external_id`: Optional source identifier.
 - `source.url`: Optional source URL. Never store an authentication token in it.
+- `source.path`: Optional absolute path for a private local source. Never commit generated plans containing private paths.
+- `source.modified_at`: Optional ISO 8601 modification timestamp for a local source.
 
 The Reminders synchronizer embeds `[mac-student-planner:id=<id>]` in the reminder notes. Reusing the ID updates the existing reminder instead of creating a duplicate.
+Protected tasks also carry `[mac-student-planner:rollover=false]`.
 
 ## Normalized source records
 

@@ -26,6 +26,7 @@ def load(name: str):
 reminders = load("reminders")
 import_ics = load("import_ics")
 import_telegram = load("import_telegram")
+import_local = load("import_local")
 launchd = load("launchd")
 
 
@@ -40,6 +41,7 @@ class ReminderTests(unittest.TestCase):
                         "title": " Submit quiz ",
                         "due_at": "2026-08-12T18:00:00+08:00",
                         "priority": 1,
+                        "rollover": False,
                         "source": {"provider": "ntulearn", "label": "CZ1001"},
                     }
                 ],
@@ -47,6 +49,7 @@ class ReminderTests(unittest.TestCase):
         )
         self.assertEqual(tasks[0]["title"], "Submit quiz")
         self.assertEqual(tasks[0]["source"]["provider"], "ntulearn")
+        self.assertFalse(tasks[0]["rollover"])
 
     def test_validate_plan_rejects_duplicate_ids(self):
         task = {
@@ -57,6 +60,17 @@ class ReminderTests(unittest.TestCase):
         }
         with self.assertRaisesRegex(ValueError, "duplicate task id"):
             reminders.validate_plan({"schema_version": 1, "tasks": [task, task]})
+
+    def test_validate_plan_rejects_non_boolean_rollover(self):
+        task = {
+            "id": "manual-1",
+            "title": "Submit report",
+            "due_at": "2026-08-12T23:59:00+08:00",
+            "rollover": "false",
+            "source": {"provider": "manual"},
+        }
+        with self.assertRaisesRegex(ValueError, "rollover must be a boolean"):
+            reminders.validate_plan({"schema_version": 1, "tasks": [task]})
 
     def test_run_jxa_parses_json(self):
         completed = type("Result", (), {"returncode": 0, "stdout": '{"created":1}', "stderr": ""})()
@@ -144,6 +158,54 @@ class TelegramTests(unittest.TestCase):
         self.assertEqual(records[0]["source"]["external_id"], "42:7")
 
 
+class LocalSourceTests(unittest.TestCase):
+    def test_imports_markdown_and_csv_with_local_provenance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "week.md").write_text("# Week\n- Finish lab report", encoding="utf-8")
+            (root / "deadlines.csv").write_text("course,due\nCZ1001,2026-08-20\n", encoding="utf-8")
+            records, skipped = import_local.scan(root, recursive=True, max_bytes=100_000)
+        self.assertEqual(skipped, [])
+        self.assertEqual({record["record_type"] for record in records}, {"document", "table_row"})
+        self.assertTrue(all(record["source"]["provider"] == "local" for record in records))
+        self.assertTrue(all("path" in record["source"] for record in records))
+
+    def test_local_id_is_stable_across_content_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "week.md"
+            path.write_text("First version", encoding="utf-8")
+            first = import_local.normalize_file(path, root, 100_000)[0]
+            path.write_text("Second version with more detail", encoding="utf-8")
+            second = import_local.normalize_file(path, root, 100_000)[0]
+        self.assertEqual(first["source"]["external_id"], second["source"]["external_id"])
+
+    def test_reads_root_and_recursion_from_private_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "sources"
+            root.mkdir()
+            config = Path(directory) / "config.json"
+            config.write_text(
+                json.dumps({"providers": {"local": {"root": str(root), "recursive": True}}}),
+                encoding="utf-8",
+            )
+            configured_root, recursive = import_local.settings(None, config, None)
+        self.assertEqual(configured_root, root)
+        self.assertTrue(recursive)
+
+    def test_csv_explicit_id_survives_row_reordering(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "tasks.csv"
+            path.write_text("id,title\na,Read\nb,Write\n", encoding="utf-8")
+            first = import_local.normalize_file(path, root, 100_000)
+            path.write_text("id,title\nb,Write\na,Read\n", encoding="utf-8")
+            second = import_local.normalize_file(path, root, 100_000)
+        first_ids = {record["data"]["id"]: record["source"]["external_id"] for record in first}
+        second_ids = {record["data"]["id"]: record["source"]["external_id"] for record in second}
+        self.assertEqual(first_ids, second_ids)
+
+
 class LaunchdTests(unittest.TestCase):
     def test_preview_plist_uses_rollover(self):
         parser = launchd.build_parser()
@@ -152,6 +214,11 @@ class LaunchdTests(unittest.TestCase):
         self.assertEqual(plist["StartCalendarInterval"], {"Hour": 22, "Minute": 5})
         self.assertIn("rollover", plist["ProgramArguments"])
         self.assertIn("Study", plist["ProgramArguments"])
+
+    def test_default_schedule_is_2100(self):
+        args = launchd.build_parser().parse_args(["print"])
+        plist = launchd.build_plist(args)
+        self.assertEqual(plist["StartCalendarInterval"], {"Hour": 21, "Minute": 0})
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@
   "reminders_list": "Student Plan",
   "evening_rollover": {
     "hour": 21,
-    "minute": 30,
+    "minute": 0,
     "preserve_time_of_day": true
   },
   "planning": {
@@ -12,13 +12,21 @@
   },
   "providers": {
     "ntulearn": {
-      "mode": "ics_or_authenticated_browser"
+      "mode": "authenticated_browser",
+      "url": "https://ntulearn.ntu.edu.sg/"
     },
     "outlook": {
-      "mode": "connector_or_ics"
+      "mode": "authenticated_browser",
+      "calendar_url": "https://outlook.office.com/calendar/",
+      "mail_url": "https://outlook.office.com/mail/"
     },
     "telegram": {
       "mode": "provided_export_or_authenticated_browser"
+    },
+    "local": {
+      "mode": "directory",
+      "root": "~/Documents/Study Planner Sources",
+      "recursive": true
     }
   }
 }
