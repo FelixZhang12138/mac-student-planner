@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -104,21 +105,6 @@ class ReminderTests(unittest.TestCase):
         self.assertEqual(json.loads(output.getvalue())["task_count"], 1)
 
     def test_sync_command_routes_normalized_task_and_dry_run(self):
-        plan = {
-            "schema_version": 1,
-            "tasks": [
-                {
-                    "id": "ntulearn-hard-deadline",
-                    "title": "Submit report",
-                    "due_at": "2026-08-12T23:59:00+08:00",
-                    "rollover": False,
-                    "source": {
-                        "provider": "ntulearn",
-                        "path": "/private/course/report.md",
-                    },
-                }
-            ],
-        }
         result = {
             "list": "Study",
             "created": 1,
@@ -128,6 +114,19 @@ class ReminderTests(unittest.TestCase):
             "list_would_be_created": False,
         }
         with tempfile.TemporaryDirectory() as directory:
+            source_path = str(Path(directory) / "course" / "report.md")
+            plan = {
+                "schema_version": 1,
+                "tasks": [
+                    {
+                        "id": "ntulearn-hard-deadline",
+                        "title": "Submit report",
+                        "due_at": "2026-08-12T23:59:00+08:00",
+                        "rollover": False,
+                        "source": {"provider": "ntulearn", "path": source_path},
+                    }
+                ],
+            }
             path = Path(directory) / "plan.json"
             path.write_text(json.dumps(plan), encoding="utf-8")
             output = StringIO()
@@ -141,7 +140,7 @@ class ReminderTests(unittest.TestCase):
         self.assertEqual(payload["list"], "Study")
         self.assertTrue(payload["dry_run"])
         self.assertFalse(payload["tasks"][0]["rollover"])
-        self.assertEqual(payload["tasks"][0]["source"]["path"], "/private/course/report.md")
+        self.assertEqual(payload["tasks"][0]["source"]["path"], source_path)
         self.assertEqual(json.loads(output.getvalue())["created"], 1)
 
     def test_rollover_command_rejects_non_forward_target_date(self):
@@ -206,6 +205,14 @@ END:VCALENDAR\r
         self.assertEqual(records[0]["description"], "Line 1\nLine 2")
         self.assertEqual(records[0]["start_at"], "2026-08-12T01:02:03+00:00")
         self.assertEqual(records[0]["source"]["url"], "https://example.invalid/event/lecture-utc")
+
+    def test_default_timezone_uses_environment_then_utc(self):
+        with patch.dict(os.environ, {"MAC_STUDENT_PLANNER_TIMEZONE": "Europe/London"}, clear=True):
+            configured = import_ics.build_parser().parse_args(["--input", "calendar.ics"])
+        with patch.dict(os.environ, {}, clear=True):
+            fallback = import_ics.build_parser().parse_args(["--input", "calendar.ics"])
+        self.assertEqual(configured.timezone, "Europe/London")
+        self.assertEqual(fallback.timezone, "UTC")
 
 
 class TelegramTests(unittest.TestCase):
@@ -360,6 +367,49 @@ class LocalSourceTests(unittest.TestCase):
         first_ids = {record["data"]["id"]: record["source"]["external_id"] for record in first}
         second_ids = {record["data"]["id"]: record["source"]["external_id"] for record in second}
         self.assertEqual(first_ids, second_ids)
+
+    def test_timezone_precedence_is_cli_environment_config_then_utc(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "config.json"
+            config.write_text(json.dumps({"timezone": "Asia/Singapore"}), encoding="utf-8")
+            with patch.dict(
+                os.environ, {"MAC_STUDENT_PLANNER_TIMEZONE": "Europe/London"}, clear=True
+            ):
+                explicit = import_local.resolve_timezone("America/New_York", config)
+                environment = import_local.resolve_timezone(None, config)
+            with patch.dict(os.environ, {}, clear=True):
+                configured = import_local.resolve_timezone(None, config)
+                fallback = import_local.resolve_timezone(None, Path(directory) / "missing.json")
+        self.assertEqual(explicit, "America/New_York")
+        self.assertEqual(environment, "Europe/London")
+        self.assertEqual(configured, "Asia/Singapore")
+        self.assertEqual(fallback, "UTC")
+
+    def test_local_ics_uses_selected_timezone(self):
+        data = """BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:local-event
+SUMMARY:Local event
+DTSTART:20260812T090000
+END:VEVENT
+END:VCALENDAR
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "calendar.ics"
+            path.write_text(data, encoding="utf-8")
+            records = import_local.normalize_file(
+                path, root, 100_000, timezone_name="America/New_York"
+            )
+        self.assertEqual(records[0]["start_at"], "2026-08-12T09:00:00-04:00")
+
+    def test_rejects_invalid_local_timezone(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "config.json"
+            config.write_text(json.dumps({"timezone": "Mars/Olympus"}), encoding="utf-8")
+            with patch.dict(os.environ, {}, clear=True):
+                with self.assertRaisesRegex(ValueError, "invalid timezone"):
+                    import_local.resolve_timezone(None, config)
 
 
 class LaunchdTests(unittest.TestCase):

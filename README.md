@@ -96,6 +96,14 @@ cp assets/config.example.json config.json
 
 `config.json` is ignored by Git. Use it to select a timezone, dedicated Reminders list, rollover time, and private local-source directory. Do not put passwords, session cookies, MFA codes, or API tokens in this file.
 
+CLI flags take precedence over environment variables and `config.json`. For scripts that accept a timezone, the resolution order is:
+
+```text
+--timezone → MAC_STUDENT_PLANNER_TIMEZONE → config.json → UTC
+```
+
+The public example uses `Asia/Singapore` for an NTU workflow; it is not hard-coded into the importers.
+
 To make the checkout available as a personal Codex skill, place or symlink the repository at:
 
 ```text
@@ -132,7 +140,9 @@ python3 scripts/import_telegram.py \
   --output /tmp/telegram-records.json
 
 # Private local/OneDrive study directory configured in config.json
-python3 scripts/import_local.py --output /tmp/local-records.json
+python3 scripts/import_local.py \
+  --timezone Asia/Singapore \
+  --output /tmp/local-records.json
 ```
 
 For live NTULearn and Outlook data, invoke the skill in Codex and sign in directly in the browser if necessary. The skill never asks for or stores the credentials.
@@ -259,6 +269,8 @@ No NTULearn, Microsoft, or Telegram private API is called directly, and no brows
 - Stable IDs constrain synchronization to planner-managed reminders.
 - Hard deadlines can opt out of rollover with `rollover: false`.
 - The synchronizer never deletes source data or completes reminders.
+
+See [`SECURITY.md`](SECURITY.md) for credential handling, supported security boundaries, and private vulnerability reporting.
 
 ## Known limitations and roadmap
 

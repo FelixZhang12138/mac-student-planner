@@ -7,10 +7,12 @@ import argparse
 import csv
 import hashlib
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import import_ics
 
@@ -56,7 +58,9 @@ def read_text(path: Path, max_bytes: int) -> str:
     return path.read_text(encoding="utf-8-sig")
 
 
-def normalize_file(path: Path, root: Path, max_bytes: int) -> list[dict[str, Any]]:
+def normalize_file(
+    path: Path, root: Path, max_bytes: int, timezone_name: str | None = None
+) -> list[dict[str, Any]]:
     stat = path.stat()
     relative = str(path.relative_to(root))
     modified_at = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
@@ -64,7 +68,9 @@ def normalize_file(path: Path, root: Path, max_bytes: int) -> list[dict[str, Any
     text = read_text(path, max_bytes)
 
     if suffix == ".ics":
-        records = import_ics.parse_ics(text, "local", relative, "Asia/Singapore")
+        records = import_ics.parse_ics(
+            text, "local", relative, timezone_name or import_ics.default_timezone()
+        )
         for index, record in enumerate(records, start=1):
             record_source = record.setdefault("source", {})
             record_source["provider"] = "local"
@@ -125,7 +131,9 @@ def normalize_file(path: Path, root: Path, max_bytes: int) -> list[dict[str, Any
     ]
 
 
-def scan(root: Path, recursive: bool, max_bytes: int) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+def scan(
+    root: Path, recursive: bool, max_bytes: int, timezone_name: str | None = None
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     resolved = root.expanduser().resolve()
     if not resolved.is_dir():
         raise ValueError(f"local source root is not a directory: {resolved}")
@@ -133,7 +141,7 @@ def scan(root: Path, recursive: bool, max_bytes: int) -> tuple[list[dict[str, An
     skipped: list[dict[str, str]] = []
     for path in iter_files(resolved, recursive):
         try:
-            records.extend(normalize_file(path, resolved, max_bytes))
+            records.extend(normalize_file(path, resolved, max_bytes, timezone_name))
         except (OSError, UnicodeError, ValueError, json.JSONDecodeError, csv.Error) as exc:
             skipped.append({"path": str(path), "reason": str(exc)})
     return records, skipped
@@ -154,12 +162,32 @@ def settings(root: Path | None, config_path: Path, recursive: bool | None) -> tu
     return configured_root, configured_recursive
 
 
+def resolve_timezone(explicit: str | None, config_path: Path) -> str:
+    candidate = explicit.strip() if explicit else ""
+    if not candidate:
+        candidate = os.environ.get("MAC_STUDENT_PLANNER_TIMEZONE", "").strip()
+    expanded_config = config_path.expanduser()
+    if not candidate and expanded_config.exists():
+        try:
+            config = json.loads(expanded_config.read_text(encoding="utf-8"))
+            candidate = str(config.get("timezone", "")).strip() if isinstance(config, dict) else ""
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"cannot read timezone from {expanded_config}: {exc}") from exc
+    candidate = candidate or "UTC"
+    try:
+        ZoneInfo(candidate)
+    except ZoneInfoNotFoundError as exc:
+        raise ValueError(f"invalid timezone: {candidate}") from exc
+    return candidate
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--recursive", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--max-bytes", type=int, default=1_000_000)
+    parser.add_argument("--timezone")
     parser.add_argument("--output", type=Path)
     return parser
 
@@ -171,10 +199,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     try:
         source_root, recursive = settings(args.root, args.config, args.recursive)
-        records, skipped = scan(source_root, recursive, args.max_bytes)
+        timezone_name = resolve_timezone(args.timezone, args.config)
+        records, skipped = scan(source_root, recursive, args.max_bytes, timezone_name)
         payload = {
             "schema_version": 1,
             "source_root": str(source_root.expanduser().resolve()),
+            "timezone": timezone_name,
             "records": records,
             "skipped": skipped,
         }
