@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
 from datetime import date, datetime, time
@@ -16,6 +17,10 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 DATE_RE = re.compile(r"^\d{8}$")
 DATETIME_RE = re.compile(r"^(\d{8})T(\d{6})(Z?)$")
+
+
+def default_timezone() -> str:
+    return os.environ.get("MAC_STUDENT_PLANNER_TIMEZONE", "").strip() or "UTC"
 
 
 def unfold(text: str) -> list[str]:
@@ -163,7 +168,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input", required=True, type=Path)
     parser.add_argument("--provider", default="calendar")
     parser.add_argument("--source-label")
-    parser.add_argument("--timezone", default="Asia/Singapore")
+    parser.add_argument("--timezone", default=default_timezone())
     parser.add_argument("--output", type=Path)
     return parser
 

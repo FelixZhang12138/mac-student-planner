@@ -12,3 +12,11 @@ config.json
 result.json
 *.token
 *.secret
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
